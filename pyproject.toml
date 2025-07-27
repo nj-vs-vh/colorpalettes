@@ -1,0 +1,13 @@
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["I"]  # check and fix imports
+ignore = ["E202", "E251"]
+
+
+[tool.mypy]
+files = "."
+no_implicit_optional = true
+incremental = false
