@@ -1,83 +1,97 @@
 import enum
+import functools
 from dataclasses import dataclass
 
-import distinctipy
+from matplotlib.colors import hsv_to_rgb, rgb_to_hsv
 import numpy as np
-from basic_colormath import get_delta_e_lab, hsl_to_rgb, rgb_to_hsl, rgb_to_lab
+from colorspacious import cspace_convert, deltaE
 
 
-class ColorblindnessType(enum.StrEnum):
+class ColorDeficiencyType(enum.StrEnum):
     Deuteranomaly = "Deuteranomaly"
-    Protanopia = "Protanopia"
     Protanomaly = "Protanomaly"
-    Deuteranopia = "Deuteranopia"
 
 
-@dataclass
+@dataclass(frozen=True)
 class Color:
-    rgb: tuple[float, float, float]  # range: [0, 255.0], [0, 255.0], [0, 255.0]
+    rgb: tuple[float, float, float]  # RGB1 representation
+    validated: bool = True
+
+    JCh_precomputed: tuple[float, float, float] | None = None
+    CAM02UCS_precomputed: tuple[float, float, float] | None = None
 
     def __post_init__(self) -> None:
-        self.rgb = tuple(np.clip(self.rgb, 0.0, 255.0))
-        self.rgb_normalized = tuple(c / 255.0 for c in self.rgb)
-        # range: [0, 100], [-128, 127], [-128, 127]
-        self.lab = rgb_to_lab(self.rgb)
-        # range: [0, 360), [0, 100], [0, 100]
-        self.hsl = rgb_to_hsl(self.rgb)
+        if self.validated and (not all(0 <= c <= 1 for c in self.rgb) or any(np.isnan(c) for c in self.rgb)):
+            raise ValueError(f"Invalid RGB coordinate: {self.rgb}")
+
+    @functools.cached_property
+    def JCh(self) -> tuple[float, float, float]:
+        if self.JCh_precomputed is not None:
+            return self.JCh_precomputed
+        # range: [0, ~100], [0, ~100], [0, 360]
+        return cspace_convert(self.rgb, "sRGB1", "JCh")
 
     @staticmethod
-    def from_rgb_normalized(rgb_0_1: tuple[float, float, float]) -> "Color":
-        return Color(tuple(255.0 * c for c in rgb_0_1))  # type: ignore
+    def from_JCh(JCh: tuple[float, float, float], ensure_valid: bool = True) -> "Color":
+        rgb = cspace_convert(JCh, "JCh", "sRGB1")
+        if ensure_valid:
+            rgb = tuple(np.clip(rgb, 0, 1))
+        return Color(rgb, JCh_precomputed=JCh)
 
-    def not_extreme(self, eps: float = 0.1) -> "Color":
-        return Color(tuple(np.clip(self.rgb, eps, 255.0 - eps)))
+    @functools.cached_property
+    def CAM02UCS(self) -> tuple[float, float, float]:
+        return cspace_convert(self.JCh, "JCh", "CAM02-UCS")
 
     @staticmethod
-    def from_hsl(hsl: tuple[float, float, float]) -> "Color":
-        hue, sat, lght = hsl
-        hue = hue % 360.0
-        sat = np.clip(sat, 0.0, 100.0)
-        lght = np.clip(lght, 0.0, 100.0)
-        return Color(hsl_to_rgb((hue, sat, lght)))
+    def from_CAM02UCS(CAM02: tuple[float, float, float], ensure_valid: bool = True) -> "Color":
+        rgb = cspace_convert(CAM02, "CAM02-UCS", "sRGB1")
+        if ensure_valid:
+            rgb = tuple(np.clip(rgb, 0, 1))
+        return Color(rgb, CAM02UCS_precomputed=CAM02)
+
+    @functools.cached_property
+    def hsv(self) -> tuple[float, float, float]:
+        return rgb_to_hsv(self.rgb)  # type: ignore
+
+    @staticmethod
+    def from_hsv(hsv: tuple[float, float, float], ensure_valid: bool = True) -> "Color":
+        rgb: tuple[float, float, float] = tuple(hsv_to_rgb(hsv))
+        if ensure_valid:
+            rgb = tuple(np.clip(rgb, 0, 1))
+        return Color(rgb)
+
+    @staticmethod
+    def checked(rgb: tuple[float, float, float]) -> "Color":
+        return Color(tuple(np.clip(rgb, 0.0, 1.0)))
 
     @staticmethod
     def white() -> "Color":
-        return Color.from_rgb_normalized((1.0, 1.0, 1.0))
+        return Color((1.0, 1.0, 1.0))
 
     @staticmethod
     def black() -> "Color":
-        return Color.from_rgb_normalized((0.0, 0.0, 0.0))
+        return Color((0.0, 0.0, 0.0))
 
     @staticmethod
     def red() -> "Color":
-        return Color.from_rgb_normalized((1.0, 0.0, 0.0))
+        return Color((1.0, 0.0, 0.0))
 
     @staticmethod
     def green() -> "Color":
-        return Color.from_rgb_normalized((0.0, 1.0, 0.0))
+        return Color((0.0, 1.0, 0.0))
 
     @staticmethod
     def blue() -> "Color":
-        return Color.from_rgb_normalized((0.0, 0.0, 1.0))
-
-    def lab_phase(self) -> float:
-        phi = np.atan(self.lab[2] / self.lab[1])
-        if self.lab[1] < 0:
-            phi += np.pi
-        elif phi < 0:
-            phi += 2 * np.pi
-        return phi
-
-    def lab_magnitude(self) -> float:
-        return np.sqrt(self.lab[2] ** 2 + self.lab[1] ** 2)
+        return Color((0.0, 0.0, 1.0))
 
     def delta_E(self, other: "Color") -> float:
-        return get_delta_e_lab(self.lab, other.lab)
+        return deltaE(self.JCh, other.JCh, input_space="JCh")
 
-    def colorblinded(self, type: ColorblindnessType) -> "Color":
-        return Color.from_rgb_normalized(
-            distinctipy.colorblind.colorblind_filter(
-                self.rgb_normalized,
-                colorblind_type=str(type).capitalize(),
+    def color_deficient(self, type: ColorDeficiencyType, severity: float = 80) -> "Color":
+        return Color.checked(
+            rgb=cspace_convert(
+                self.rgb,
+                start={"name": "sRGB1+CVD", "cvd_type": type.lower(), "severity": severity},
+                end="sRGB1",
             )
         )

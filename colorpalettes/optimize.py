@@ -1,11 +1,11 @@
 import itertools
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Collection, Iterable
 
 import numpy as np
 import scipy.optimize
 
-from colorpalettes.color import Color, ColorblindnessType
+from colorpalettes.color import Color, ColorDeficiencyType
 from colorpalettes.colorset import Colorset
 
 Potential = Callable[[float], float]
@@ -32,7 +32,7 @@ class ColorsetOptimizationConfig:
     colorblind_colors_weight: float = 1.0
     global_constraints_weight: float = 1.0
     hue_valley: tuple[float, float] | None = None
-    saturation_valley: tuple[float, float] = (60, 20)
+    chroma_valley: tuple[float, float] = (60, 20)
     lightness_valley: tuple[float, float] = (70, 20)
     background: Color | None = field(default_factory=Color.white)
     minimization_algorithm: str = "L-BFGS-B"
@@ -41,11 +41,26 @@ class ColorsetOptimizationConfig:
 
 
 def optimize_colorset(init_colorset: Colorset, config: ColorsetOptimizationConfig) -> Colorset:
-    init_colorset = Colorset(tuple(c.not_extreme() for c in init_colorset))
     first = init_colorset.colors[0]
 
-    def unpack(hsl_vec: np.ndarray) -> Colorset:
-        colors = [Color.from_hsl(tuple(hsl)) for hsl in itertools.batched(hsl_vec, n=3)]
+    def encode(c: Color) -> Iterable[float]:
+        return c.hsv
+
+    def decode(vec: Collection[float]) -> Color:
+        h, s, v = vec
+        h = h % 1.0
+        return Color.from_hsv((h, s, v), ensure_valid=False)  # type: ignore
+
+    def pack(cs: Colorset) -> np.ndarray:
+        start_idx = 1 if config.freeze_first else 0
+        return np.array(list(itertools.chain.from_iterable(encode(c) for c in cs.colors[start_idx:])))
+
+    def unpack(vec: np.ndarray) -> Colorset | None:
+        try:
+            colors = [decode(coords) for coords in itertools.batched(vec, n=3)]
+        except ValueError:
+            return None
+
         if config.freeze_first:
             colors.insert(0, first)
 
@@ -60,25 +75,20 @@ def optimize_colorset(init_colorset: Colorset, config: ColorsetOptimizationConfi
                 total += config.potential(row[j])
         return total / colorset.n
 
-    def objective(hsl_vec: np.ndarray) -> float:
-        cs = unpack(hsl_vec)
+    def loss(vec: np.ndarray) -> float:
+        cs = unpack(vec)
+        if cs is None:
+            return 1e10
 
         # global colors potential
         global_loss = 0
-        # extreme colors dampin
-        delta = 1
-        power = 4
-        for color in cs.colors:
-            for val in (color.hsl[1], color.hsl[2]):
-                if val <= 0.0 or val >= 100.0:
-                    return np.inf
-                global_loss += (val / delta) ** -power + ((100 - val) / delta) ** -power
+
         # sat and lght valleys
-        sat_mean, sat_std = config.saturation_valley
-        lght_mean, lght_std = config.lightness_valley
+        C_mean, C_std = config.chroma_valley
+        J_mean, J_std = config.lightness_valley
         for color in cs.colors:
-            hue, sat, lght = color.hsl
-            global_loss += ((lght - lght_mean) / lght_std) ** 2 / 2 + ((sat - sat_mean) / sat_std) ** 2 / 2
+            J, C, hue = color.JCh
+            global_loss += ((J - J_mean) / J_std) ** 2 / 2 + ((C - C_mean) / C_std) ** 2 / 2
             if config.hue_valley:
                 hue_mean, hue_std = config.hue_valley
                 hue_residual = min(  # accounting for hue wrapping over 360
@@ -91,17 +101,17 @@ def optimize_colorset(init_colorset: Colorset, config: ColorsetOptimizationConfi
                     )
                 )
                 global_loss += (hue_residual / hue_std) ** 2 / 2
-        # background color distinctness
+        # color must be distinct from the background
         if config.background is not None:
             for c in cs:
-                global_loss += 30 / c.delta_E(config.background)
+                global_loss += config.potential(c.delta_E(config.background))
 
         standard_pairwise_loss = pairwise_cost(cs)
 
         colorblind_pairwise_loss = 0
-        for cb_type in ColorblindnessType:
-            colorblind_pairwise_loss += pairwise_cost(cs.colorblinded(cb_type))
-        colorblind_pairwise_loss /= len(ColorblindnessType)
+        for cb_type in ColorDeficiencyType:
+            colorblind_pairwise_loss += pairwise_cost(cs.color_deficient(cb_type))
+        colorblind_pairwise_loss /= len(ColorDeficiencyType)
 
         return (
             config.global_constraints_weight * global_loss
@@ -109,15 +119,13 @@ def optimize_colorset(init_colorset: Colorset, config: ColorsetOptimizationConfi
             + config.colorblind_colors_weight * colorblind_pairwise_loss
         )
 
-    x0 = np.array(
-        list(itertools.chain.from_iterable(c.hsl for c in init_colorset.colors[(1 if config.freeze_first else 0) :]))
-    )
-
     res = scipy.optimize.minimize(
-        objective,
-        x0=x0,
+        loss,
+        x0=pack(init_colorset),
         method=config.minimization_algorithm,
     )
     if config.verbose:
         print(res)
-    return unpack(res.x)
+    result = unpack(res.x)
+    assert result is not None, "Minimization result is not a valid color"
+    return result

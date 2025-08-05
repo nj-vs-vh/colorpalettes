@@ -13,6 +13,7 @@ def image_colors(image: Image) -> np.ndarray:
     elif image.mode != "RGB":
         raise ValueError("Only RGB and RGBA images are supported!")
     imdata = imdata.astype(float)
+    imdata /= 255.0  # to sRGB1
     return imdata.reshape(-1, 3)
 
 
@@ -22,4 +23,4 @@ def k_means_palette(image: Image, n_colors: int, random_seed: int | None = None)
     kmeans.fit(colors_arr)
     palette = kmeans.cluster_centers_
     # darkness_idx = np.flip(np.argsort(np.sum(palette**2, axis=1)))
-    return Colorset(tuple(Color(c) for c in palette))
+    return Colorset(tuple(Color(rgb) for rgb in palette))
