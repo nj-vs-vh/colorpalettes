@@ -2,9 +2,9 @@ import enum
 import functools
 from dataclasses import dataclass
 
-from matplotlib.colors import hsv_to_rgb, rgb_to_hsv
 import numpy as np
 from colorspacious import cspace_convert, deltaE
+from matplotlib.colors import hsv_to_rgb, rgb_to_hsv
 
 
 class ColorDeficiencyType(enum.StrEnum):
