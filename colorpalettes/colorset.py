@@ -24,13 +24,20 @@ class Colorset:
     def from_cmap(name: str) -> "Colorset":
         cmap = matplotlib.colormaps[name]
         if isinstance(cmap, ListedColormap):
-            return Colorset([Color(rgb=rgb) for rgb in cmap.colors])  # type: ignore
+            return Colorset(tuple(Color(rgb=rgb) for rgb in cmap.colors))  # type: ignore
         else:
             raise ValueError(f"Not a listed colormap ({name}): {cmap}")
+
+    @staticmethod
+    def random(n: int, seed: int | None = None) -> "Colorset":
+        rng = np.random.default_rng(seed)
+        return Colorset(tuple(Color.random(rng) for _ in range(n)))
 
     @property
     def n(self) -> int:
         return len(self.colors)
+
+    __len__ = n
 
     @functools.cached_property
     def distance_mat(self) -> np.ndarray:
@@ -76,7 +83,7 @@ class Colorset:
         for i in range(self.n):
             mat[i, i] = np.nan
         mesh = ax.pcolormesh(mat, cmap="inferno", vmin=0.0, vmax=100.0)
-        fig.colorbar(mesh)
+        fig.colorbar(mesh, label="$\\Delta E$")
         for i, color in enumerate(self.colors):
             ax.axvspan(i, i + 1, 0.0, 0.02, color=color.rgb)
             ax.axhspan(i, i + 1, 0.0, 0.02, color=color.rgb)

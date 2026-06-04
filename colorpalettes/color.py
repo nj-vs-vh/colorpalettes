@@ -32,11 +32,11 @@ class Color:
         return cspace_convert(self.rgb, "sRGB1", "JCh")
 
     @staticmethod
-    def from_JCh(JCh: tuple[float, float, float], ensure_valid: bool = True) -> "Color":
+    def from_JCh(JCh: tuple[float, float, float], ensure_valid: bool = True, validate: bool = True) -> "Color":
         rgb = cspace_convert(JCh, "JCh", "sRGB1")
         if ensure_valid:
             rgb = tuple(np.clip(rgb, 0, 1))
-        return Color(rgb, JCh_precomputed=JCh)
+        return Color(rgb, JCh_precomputed=JCh, validated=validate)
 
     @functools.cached_property
     def CAM02UCS(self) -> tuple[float, float, float]:
@@ -84,8 +84,25 @@ class Color:
     def blue() -> "Color":
         return Color((0.0, 0.0, 1.0))
 
+    @staticmethod
+    def random(rng: np.random.Generator | None = None) -> "Color":
+        if rng is None:
+            rng = np.random.default_rng()
+        for _ in range(100):  # try up to 100 times to find a valid random color
+            JCh = (rng.uniform(0, 100), rng.uniform(0, 100), rng.uniform(0, 360))
+            try:
+                return Color.from_JCh(JCh, ensure_valid=False, validate=True)
+            except ValueError:
+                continue
+        else:
+            raise RuntimeError("Failed to generate a valid random color after 100 attempts")
+
     def delta_E(self, other: "Color") -> float:
-        return deltaE(self.JCh, other.JCh, input_space="JCh")
+        try:
+            return deltaE(self.JCh, other.JCh, input_space="JCh")
+        except Exception:
+            print(f"Error computing delta_E between {self.rgb} and {other.rgb}")
+            raise
 
     def color_deficient(self, type: ColorDeficiencyType, severity: float = 80) -> "Color":
         return Color.checked(
